@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bubble Shooter Relaxing</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      user-select: none;
+    }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .game-container {
+      background: #16213e;
+      padding: 20px;
+      border-radius: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    canvas {
+      display: block;
+      background: #0f3460;
+      border-radius: 16px;
+      cursor: crosshair;
+      box-shadow: inset 0 0 20px rgba(0,0,0,0.4);
+    }
+    .info-panel {
+      width: 100%;
+      margin-top: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: #eee;
+      font-weight: bold;
+      font-size: 1.2rem;
+    }
+    .info-panel div {
+      background: #1a1a2e;
+      padding: 8px 18px;
+      border-radius: 30px;
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
+    }
+    .buttons {
+      display: flex;
+      gap: 12px;
+    }
+    .buttons button {
+      background: #e94560;
+      border: none;
+      color: #fff;
+      font-weight: bold;
+      font-size: 1rem;
+      padding: 8px 20px;
+      border-radius: 30px;
+      cursor: pointer;
+      transition: 0.2s;
+      box-shadow: 0 4px 0 #a0223a;
+      letter-spacing: 0.5px;
+    }
+    .buttons button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 0 #a0223a;
+    }
+    .buttons button:active {
+      transform: translateY(2px);
+      box-shadow: 0 2px 0 #a0223a;
+    }
+    .buttons button.reset {
+      background: #533483;
+      box-shadow: 0 4px 0 #3a1f5c;
+    }
+    .buttons button.reset:hover {
+      box-shadow: 0 6px 0 #3a1f5c;
+    }
+    .score-label {
+      color: #f5c842;
+    }
+  </style>
+</head>
+<body>
+<div class="game-container">
+  <canvas id="gameCanvas" width="500" height="600"></canvas>
+  <div class="info-panel">
+    <div>🏆 <span class="score-label">Pontos:</span> <span id="scoreDisplay">0</span></div>
+    <div>📊 Nível: <span id="levelDisplay">1</span></div>
+    <div class="buttons">
+      <button id="nextBtn">➡️ Next</button>
+      <button id="resetBtn" class="reset">🔄 Reset</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function() {
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreSpan = document.getElementById('scoreDisplay');
+    const levelSpan = document.getElementById('levelDisplay');
+
+    // Configurações
+    const COLS = 10;
+    const ROWS = 8;
+    const BUBBLE_RADIUS = 20;
+    const SPACING = BUBBLE_RADIUS * 2 + 2; // 42
+    const OFFSET_X = (canvas.width - (COLS * SPACING - SPACING/2)) / 2;
+    const OFFSET_Y = 40;
+    const CANNON_X = canvas.width / 2;
+    const CANNON_Y = canvas.height - 30;
+    const SHOOT_SPEED = 8;
+    const COLORS = ['#ff6b6b', '#feca57', '#48dbfb', '#1dd1a1', '#f368e0', '#ff9f43'];
+
+    // Estado do jogo
+    let grid = [];
+    let cannonAngle = -Math.PI / 2; // aponta para cima
+    let currentBubble = null;   // { x, y, color }
+    let flyingBubble = null;    // { x, y, vx, vy, color }
+    let score = 0;
+    let level = 1;
+    let gameOver = false;
+    let canShoot = true;
+    let processing = false;     // evita múltiplas ações durante animação
+
+    // --- Funções auxiliares ---
+    function randomColor() {
+      return COLORS[Math.floor(Math.random() * COLORS.length)];
+    }
+
+    // Cria uma grade vazia (null = vazio)
+    function createEmptyGrid() {
+      return Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+    }
+
+    // Gera bolhas iniciais para um nível (preenche as primeiras 5 linhas)
+    function generateLevel() {
+      const newGrid = createEmptyGrid();
+      const numRows = Math.min(ROWS, 5 + (level - 1) % 3); // até 7 linhas
+      for (let row = 0; row < numRows; row++) {
+        const colsThisRow = (row % 2 === 0) ? COLS : COLS - 1;
+        for (let col = 0; col < colsThisRow; col++) {
+          newGrid[row][col] = randomColor();
+        }
+      }
+      return newGrid;
+    }
+
+    // Converte coordenadas de grade para pixel (centro da bolha)
+    function gridToPixel(row, col) {
+      const x = OFFSET_X + col * SPACING + (row % 2 === 0 ? 0 : SPACING/2);
+      const y = OFFSET_Y + row * SPACING;
+      return { x, y };
+    }
+
+    // Converte pixel para coordenada de grade mais próxima (retorna {row, col} ou null se fora)
+    function pixelToGrid(px, py) {
+      for (let row = 0; row < ROWS; row++) {
+        for (let col = 0; col < (row % 2 === 0 ? COLS : COLS - 1); col++) {
+          const pos = gridToPixel(row, col);
+          const dist = Math.hypot(px - pos.x, py - pos.y);
+          if (dist < SPACING * 0.8) {
+            return { row, col };
+          }
+        }
+      }
+      return null;
+    }
+
+    // Verifica se uma célula está ocupada
+    function isOccupied(row, col) {
+      if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return true; // fora da grade
+      return grid[row][col] !== null;
+    }
+
+    // Encontra a posição de grade vazia mais próxima de (px, py)
+    function findClosestEmpty(px, py) {
+      let best = null;
+      let bestDist = Infinity;
+      for (let row = 0; row < ROWS; row++) {
+        const cols = (row % 2 === 0) ? COLS : COLS - 1;
+        for (let col = 0; col < cols; col++) {
+          if (grid[row][col] !== null) continue;
+          const pos = gridToPixel(row, col);
+          const d = Math.hypot(px - pos.x, py - pos.y);
+          if (d < bestDist) {
+            bestDist = d;
+            best = { row, col };
+          }
+        }
+      }
+      return best; // pode ser null se grade cheia
+    }
+
+    // Verifica se há alguma bolha na grade
+    function hasBubbles() {
+      for (let row = 0; row < ROWS; row++) {
+        for (let col = 0; col < (row % 2 === 0 ? COLS : COLS - 1); col++) {
+          if (grid[row][col] !== null) return true;
+        }
+      }
+      return false;
+    }
+
+    // --- Flood Fill para encontrar grupo da mesma cor ---
+    function findGroup(row, col, color, visited) {
+      if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return [];
+      if (visited[row][col]) return [];
+      if (grid[row][col] !== color) return [];
+      visited[row][col] = true;
+      const group = [{ row, col }];
+      // vizinhos: 6 direções (linha par/ímpar)
+      const directions = (row % 2 === 0) 
+        ? [[-1,0],[-1,1],[0,-1],[0,1],[1,0],[1,1]]
+        : [[-1,-1],[-1,0],[0,-1],[0,1],[1,-1],[1,0]];
+      for (const [dr, dc] of directions) {
+        const nr = row + dr;
+        const nc = col + dc;
+        if (nr >= 0 && nr < ROWS && nc >= 0 && nc < (nr % 2 === 0 ? COLS : COLS - 1)) {
+          if (!visited[nr][nc] && grid[nr][nc] === color) {
+            group.push(...findGroup(nr, nc, color, visited));
+          }
+        }
+      }
+      return group;
+    }
+
+    // Remove grupos de 3 ou mais e retorna o total removido
+    function removeGroups() {
+      const visited = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
+      let totalRemoved = 0;
+      for (let row = 0; row < ROWS; row++) {
+        const cols = (row % 2 === 0) ? COLS : COLS - 1;
+        for (let col = 0; col < cols; col++) {
+          if (grid[row][col] !== null && !visited[row][col]) {
+            const color = grid[row][col];
+            const group = findGroup(row, col, color, visited);
+            if (group.length >= 3) {
+              // Remove as bolhas do grupo
+              for (const cell of group) {
+                grid[cell.row][cell.col] = null;
+                totalRemoved++;
+              }
+            }
+          }
+        }
+      }
+      return totalRemoved;
+    }
+
+    // --- Lógica de disparo ---
+    function shoot() {
+      if (!canShoot || flyingBubble || processing) return;
+      if (currentBubble === null) {
+        // Gera nova bolha
+        currentBubble = { color: randomColor() };
+        return;
+      }
+      // Inicia o voo
+      const angle = cannonAngle;
+      const vx = Math.cos(angle) * SHOOT_SPEED;
+      const vy = Math.sin(angle) * SHOOT_SPEED;
+      flyingBubble = {
+        x: CANNON_X + Math.cos(angle) * (BUBBLE_RADIUS + 5),
+        y: CANNON_Y + Math.sin(angle) * (BUBBLE_RADIUS + 5),
+        vx: vx,
+        vy: vy,
+        color: currentBubble.color
+      };
+      currentBubble = null;
+      canShoot = false;
+    }
+
+    // Atualiza a bolha em voo
+    function updateFlyingBubble() {
+      if (!flyingBubble) return;
+      // Move
+      flyingBubble.x += flyingBubble.vx;
+      flyingBubble.y += flyingBubble.vy;
+
+      // Rebater nas laterais
+      if (flyingBubble.x - BUBBLE_RADIUS < 0 || flyingBubble.x + BUBBLE_RADIUS > canvas.width) {
+        flyingBubble.vx *= -1;
+        flyingBubble.x += flyingBubble.vx; // evita colar
+      }
+
+      // Colisão com teto
+      if (flyingBubble.y - BUBBLE_RADIUS < 0) {
+        flyingBubble.y = BUBBLE_RADIUS;
+        fixBubble(flyingBubble.x, flyingBubble.y, flyingBubble.color);
+        return;
+      }
+
+      // Colisão com outras bolhas (fixas)
+      for (let row = 0; row < ROWS; row++) {
+        const cols = (row % 2 === 0) ? COLS : COLS - 1;
+        for (let col = 0; col < cols; col++) {
+          if (grid[row][col] === null) continue;
+          const pos = gridToPixel(row, col);
+          const dist = Math.hypot(flyingBubble.x - pos.x, flyingBubble.y - pos.y);
+          if (dist < BUBBLE_RADIUS * 2 - 2) {
+            // Colidiu, fixa a bolha
+            fixBubble(flyingBubble.x, flyingBubble.y, flyingBubble.color);
+            return;
+          }
+        }
+      }
+    }
+
+    // Fixa a bolha na grade (encontra célula vazia mais próxima)
+    function fixBubble(x, y, color) {
+      const cell = findClosestEmpty(x, y);
+      if (!cell) {
+        // Grade cheia? Game over?
+        flyingBubble = null;
+        canShoot = true;
+        gameOver = true;
+        return;
+      }
+      grid[cell.row][cell.col] = color;
+      flyingBubble = null;
+
+      // Processa remoção de grupos
+      processing = true;
+      setTimeout(() => {
+        const removed = removeGroups();
+        if (removed > 0) {
+          score += removed * 10;
+          updateUI();
+        }
+        // Verifica se acabaram as bolhas
+        if (!hasBubbles()) {
+          // Próximo nível automaticamente?
+          // Deixamos o jogador clicar em "Next"
+          canShoot = true;
+          processing = false;
+          // Mas não gera novo nível automaticamente, o botão Next faz isso.
+        } else {
+          canShoot = true;
+          processing = false;
+        }
+        // Se não houver mais bolhas, o botão Next deve ser usado.
+        updateUI();
+      }, 200);
+    }
+
+    // --- Inicialização / Reset ---
+    function initGame() {
+      grid = generateLevel();
+      score = 0;
+      level = 1;
+      gameOver = false;
+      canShoot = true;
+      flyingBubble = null;
+      currentBubble = { color: randomColor() };
+      processing = false;
+      updateUI();
+    }
+
+    function nextLevel() {
+      if (processing) return;
+      if (hasBubbles()) {
+        // Se ainda há bolhas, não avança (ou podemos forçar? melhor não)
+        return;
+      }
+      level++;
+      grid = generateLevel();
+      currentBubble = { color: randomColor() };
+      flyingBubble = null;
+      canShoot = true;
+      gameOver = false;
+      updateUI();
+    }
+
+    function resetGame() {
+      if (processing) return;
+      initGame();
+    }
+
+    function updateUI() {
+      scoreSpan.textContent = score;
+      levelSpan.textContent = level;
+    }
+
+    // --- Desenho ---
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Desenha grade
+      for (let row = 0; row < ROWS; row++) {
+        const cols = (row % 2 === 0) ? COLS : COLS - 1;
+        for (let col = 0; col < cols; col++) {
+          const color = grid[row][col];
+          if (color === null) continue;
+          const pos = gridToPixel(row, col);
+          ctx.beginPath();
+          ctx.arc(pos.x, pos.y, BUBBLE_RADIUS, 0, Math.PI * 2);
+          ctx.fillStyle = color;
+          ctx.fill();
+          ctx.shadowColor = 'rgba(0,0,0,0.3)';
+          ctx.shadowBlur = 8;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          // Brilho
+          ctx.beginPath();
+          ctx.arc(pos.x-4, pos.y-4, 6, 0, Math.PI*2);
+          ctx.fillStyle = 'rgba(255,255,255,0.2)';
+          ctx.fill();
+        }
+      }
+
+      // Desenha canhão
+      ctx.save();
+      ctx.translate(CANNON_X, CANNON_Y);
+      ctx.rotate(cannonAngle);
+      ctx.fillStyle = '#555';
+      ctx.shadowColor = '#000';
+      ctx.shadowBlur = 10;
+      ctx.fillRect(-8, -30, 16, 30);
+      ctx.fillStyle = '#888';
+      ctx.fillRect(-6, -28, 12, 10);
+      ctx.restore();
+
+      // Desenha a bolha atual no canhão
+      if (currentBubble) {
+        ctx.beginPath();
+        ctx.arc(CANNON_X + Math.cos(cannonAngle) * 25, CANNON_Y + Math.sin(cannonAngle) * 25, BUBBLE_RADIUS, 0, Math.PI*2);
+        ctx.fillStyle = currentBubble.color;
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = 15;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+
+      // Desenha bolha em voo
+      if (flyingBubble) {
+        ctx.beginPath();
+        ctx.arc(flyingBubble.x, flyingBubble.y, BUBBLE_RADIUS, 0, Math.PI*2);
+        ctx.fillStyle = flyingBubble.color;
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = 15;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+
+      // Mensagem de game over / nível completo
+      if (!hasBubbles() && !flyingBubble) {
+        ctx.fillStyle = 'rgba(255,255,255,0.8)';
+        ctx.font = 'bold 30px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('🎉 Nível Completo!', canvas.width/2, canvas.height/2 - 20);
+        ctx.font = '18px sans-serif';
+        ctx.fillText('Clique em "Next"', canvas.width/2, canvas.height/2 + 30);
+      }
+      if (gameOver && hasBubbles()) {
+        ctx.fillStyle = 'rgba(255,0,0,0.7)';
+        ctx.font = 'bold 36px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('💥 Game Over', canvas.width/2, canvas.height/2);
+      }
+    }
+
+    // --- Loop principal ---
+    function gameLoop() {
+      if (flyingBubble && !processing) {
+        updateFlyingBubble();
+      }
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // --- Eventos ---
+    canvas.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const dx = mx - CANNON_X;
+      const dy = my - CANNON_Y;
+      let angle = Math.atan2(dy, dx);
+      // Limita ângulo (não atirar para trás)
+      if (angle > -0.1) angle = -0.1;
+      if (angle < -Math.PI + 0.1) angle = -Math.PI + 0.1;
+      cannonAngle = angle;
+    });
+
+    canvas.addEventListener('click', (e) => {
+      if (gameOver) {
+        resetGame();
+        return;
+      }
+      if (!hasBubbles()) {
+        // Se não há bolhas, o botão next é o caminho, mas podemos atirar? não.
+        return;
+      }
+      shoot();
+    });
+
+    document.getElementById('nextBtn').addEventListener('click', nextLevel);
+    document.getElementById('resetBtn').addEventListener('click', resetGame);
+
+    // Inicializa
+    initGame();
+    gameLoop();
+  })();
+</script>
+</body>
+  </html>
